@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>תמלול אודיו עם זיהוי דוברים בסיסי</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 2rem auto;
+            padding: 1rem;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 1.5rem;
+        }
+        .upload-section {
+            border: 2px dashed #3498db;
+            padding: 2rem;
+            text-align: center;
+            margin-bottom: 1.5rem;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .upload-section:hover {
+            background-color: #f7f9fc;
+        }
+        #fileInput {
+            display: none;
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            margin: 0 0.5rem;
+        }
+        button:disabled {
+            background-color: #bdc3c7;
+            cursor: not-allowed;
+        }
+        #transcription {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            min-height: 100px;
+            white-space: pre-wrap;
+            line-height: 1.6;
+        }
+        .status {
+            margin-top: 1rem;
+            color: #7f8c8d;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .speaker {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            margin: 2px 0;
+            font-weight: bold;
+        }
+        .copy-btn {
+            float: left;
+            font-size: 0.9rem;
+            padding: 0.5rem 1rem;
+        }
+        .controls {
+            margin: 1rem 0;
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+        }
+        .segment {
+            padding: 8px;
+            margin: 8px 0;
+            border-radius: 4px;
+            background-color: #f8f9fa;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>תמלול אודיו עם זיהוי דוברים בסיסי</h1>
+        
+        <div class="upload-section" onclick="document.getElementById('fileInput').click()">
+            <p>לחץ או גרור קובץ אודיו לכאן</p>
+            <input type="file" id="fileInput" accept="audio/*" />
+        </div>
+
+        <div class="controls">
+            <button id="transcribeBtn" disabled>תמלל</button>
+            <button id="copyBtn" style="display: none;" onclick="copyToClipboard()">העתק טקסט</button>
+            <button id="saveBtn" style="display: none;" onclick="saveToFile()">שמור לקובץ</button>
+        </div>
+        
+        <div class="status" id="status"></div>
+        <div id="transcription"></div>
+    </div>
+
+    <script>
+        const API_URL = 'https://api-inference.huggingface.co/models/openai/whisper-large-v3';
+        const API_KEY = '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';  // החלף עם המפתח שלך
+
+        const fileInput = document.getElementById('fileInput');
+        const transcribeBtn = document.getElementById('transcribeBtn');
+        const copyBtn = document.getElementById('copyBtn');
+        const saveBtn = document.getElementById('saveBtn');
+        const status = document.getElementById('status');
+        const transcription = document.getElementById('transcription');
+        let selectedFile = null;
+        let lastTranscription = '';
+
+        // פונקציה להעתקה ללוח
+        async function copyToClipboard() {
+            try {
+                await navigator.clipboard.writeText(transcription.textContent);
+                const originalText = copyBtn.textContent;
+                copyBtn.textContent = 'הועתק!';
+                setTimeout(() => copyBtn.textContent = originalText, 2000);
+            } catch (err) {
+                console.error('Failed to copy: ', err);
+            }
+        }
+
+        // פונקציה לשמירה לקובץ
+        function saveToFile() {
+            const blob = new Blob([transcription.textContent], { type: 'text/plain;charset=utf-8' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'transcription.txt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(a.href);
+        }
+
+        function generatePastelColor(seed) {
+            const hue = Math.abs(hashCode(seed)) % 360;
+            return `hsl(${hue}, 70%, 80%)`;
+        }
+
+        function hashCode(str) {
+            let hash = 0;
+            for (let i = 0; i < str.length; i++) {
+                hash = str.charCodeAt(i) + ((hash << 5) - hash);
+            }
+            return hash;
+        }
+
+        // פונקציה לזיהוי דוברים בסיסי על פי סימני פיסוק וזמני שתיקה
+        function detectSpeakers(text) {
+            // מחלק את הטקסט לפי נקודות, סימני שאלה וסימני קריאה
+            const segments = text.split(/(?<=[.!?])\s+/);
+            let currentSpeaker = 1;
+            let lastSegmentType = '';
+            
+            return segments.map(segment => {
+                if (!segment.trim()) return null;
+                
+                // החלפת דובר על פי תוכן הטקסט
+                if (segment.includes('?')) {
+                    if (lastSegmentType === 'question') {
+                        currentSpeaker = currentSpeaker === 1 ? 2 : 1;
+                    }
+                    lastSegmentType = 'question';
+                } else if (segment.includes('!')) {
+                    if (lastSegmentType === 'exclamation') {
+                        currentSpeaker = currentSpeaker === 1 ? 2 : 1;
+                    }
+                    lastSegmentType = 'exclamation';
+                } else {
+                    if (lastSegmentType === 'statement') {
+                        currentSpeaker = currentSpeaker === 1 ? 2 : 1;
+                    }
+                    lastSegmentType = 'statement';
+                }
+
+                return {
+                    speaker: currentSpeaker,
+                    text: segment.trim()
+                };
+            }).filter(Boolean);
+        }
+
+        fileInput.addEventListener('change', (e) => {
+            selectedFile = e.target.files[0];
+            if (selectedFile) {
+                status.textContent = `נבחר הקובץ: ${selectedFile.name}`;
+                transcribeBtn.disabled = false;
+            }
+        });
+
+        // תמיכה בגרירת קבצים
+        const uploadSection = document.querySelector('.upload-section');
+        
+        uploadSection.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadSection.style.backgroundColor = '#f0f7ff';
+        });
+
+        uploadSection.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            uploadSection.style.backgroundColor = '#f7f9fc';
+        });
+
+        uploadSection.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadSection.style.backgroundColor = '#f7f9fc';
+            
+            if (e.dataTransfer.files.length) {
+                selectedFile = e.dataTransfer.files[0];
+                status.textContent = `נבחר הקובץ: ${selectedFile.name}`;
+                transcribeBtn.disabled = false;
+            }
+        });
+
+        transcribeBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            try {
+                status.innerHTML = '<div class="loading"></div> מתחיל בתמלול...';
+                transcribeBtn.disabled = true;
+                copyBtn.style.display = 'none';
+                saveBtn.style.display = 'none';
+                transcription.textContent = '';
+
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${API_KEY}`
+                    },
+                    body: selectedFile
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const result = await response.json();
+                
+                if (result && result.text) {
+                    lastTranscription = result.text;
+                    const segments = detectSpeakers(result.text);
+                    
+                    let formattedText = '';
+                    segments.forEach(segment => {
+                        const speakerColor = generatePastelColor(`speaker-${segment.speaker}`);
+                        formattedText += `<div class="segment">`;
+                        formattedText += `<span class="speaker" style="background-color: ${speakerColor}">דובר ${segment.speaker}</span>: `;
+                        formattedText += `${segment.text}</div>`;
+                    });
+
+                    transcription.innerHTML = formattedText;
+                    status.textContent = 'התמלול הושלם בהצלחה!';
+                    copyBtn.style.display = 'inline-block';
+                    saveBtn.style.display = 'inline-block';
+                } else {
+                    throw new Error('תגובה לא תקינה מהשרת');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                status.textContent = 'אירעה שגיאה בתמלול. אנא נסה שוב.';
+            } finally {
+                transcribeBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>
