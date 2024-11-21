@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>תמלול אודיו עם זיהוי דוברים בסיסי</title>
+    <title>תמלול חכם עם זיהוי דוברים</title>
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 800px;
+            max-width: 900px;
             margin: 2rem auto;
             padding: 1rem;
             background-color: #f5f5f5;
@@ -44,20 +44,11 @@
             border-radius: 4px;
             cursor: pointer;
             font-size: 1rem;
-            margin: 0 0.5rem;
+            margin: 0.5rem;
         }
         button:disabled {
             background-color: #bdc3c7;
             cursor: not-allowed;
-        }
-        #transcription {
-            margin-top: 1.5rem;
-            padding: 1rem;
-            border: 1px solid #e0e0e0;
-            border-radius: 4px;
-            min-height: 100px;
-            white-space: pre-wrap;
-            line-height: 1.6;
         }
         .status {
             margin-top: 1rem;
@@ -78,43 +69,91 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
-        .speaker {
-            display: inline-block;
-            padding: 2px 8px;
+        #transcription {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            border: 1px solid #e0e0e0;
             border-radius: 4px;
-            margin: 2px 0;
-            font-weight: bold;
-        }
-        .copy-btn {
-            float: left;
-            font-size: 0.9rem;
-            padding: 0.5rem 1rem;
-        }
-        .controls {
-            margin: 1rem 0;
-            display: flex;
-            gap: 1rem;
-            justify-content: center;
+            min-height: 100px;
         }
         .segment {
-            padding: 8px;
-            margin: 8px 0;
+            padding: 0.5rem;
+            margin: 0.5rem 0;
             border-radius: 4px;
-            background-color: #f8f9fa;
+            border-right: 4px solid;
+        }
+        .SPEAKER_00 {
+            background-color: #e3f2fd;
+            border-right-color: #2196f3;
+        }
+        .SPEAKER_01 {
+            background-color: #f3e5f5;
+            border-right-color: #9c27b0;
+        }
+        .timestamp {
+            font-size: 0.8em;
+            color: #666;
+            margin-left: 0.5rem;
+        }
+        .speaker-label {
+            font-weight: bold;
+            margin-left: 0.5rem;
+        }
+        #progress {
+            width: 100%;
+            margin: 1rem 0;
+            display: none;
+        }
+        .progress-step {
+            margin: 0.5rem 0;
+            display: flex;
+            align-items: center;
+        }
+        .progress-label {
+            width: 150px;
+            margin-left: 1rem;
+        }
+        .progress-bar {
+            flex-grow: 1;
+            height: 8px;
+            background-color: #e0e0e0;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            background-color: #3498db;
+            transition: width 0.3s ease;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>תמלול אודיו עם זיהוי דוברים בסיסי</h1>
+        <h1>תמלול חכם עם זיהוי דוברים</h1>
         
         <div class="upload-section" onclick="document.getElementById('fileInput').click()">
             <p>לחץ או גרור קובץ אודיו לכאן</p>
             <input type="file" id="fileInput" accept="audio/*" />
         </div>
 
-        <div class="controls">
-            <button id="transcribeBtn" disabled>תמלל</button>
+        <div id="progress">
+            <div class="progress-step">
+                <span class="progress-label">זיהוי דוברים:</span>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="diarization-progress"></div>
+                </div>
+            </div>
+            <div class="progress-step">
+                <span class="progress-label">תמלול:</span>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="transcription-progress"></div>
+                </div>
+            </div>
+        </div>
+
+        <div style="text-align: center;">
+            <button id="transcribeBtn" disabled>תמלל עם זיהוי דוברים</button>
             <button id="copyBtn" style="display: none;" onclick="copyToClipboard()">העתק טקסט</button>
             <button id="saveBtn" style="display: none;" onclick="saveToFile()">שמור לקובץ</button>
         </div>
@@ -124,8 +163,9 @@
     </div>
 
     <script>
-        const API_URL = 'https://api-inference.huggingface.co/models/openai/whisper-large-v3';
-        const API_KEY = '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';  // החלף עם המפתח שלך
+        const WHISPER_API_URL = 'https://api-inference.huggingface.co/models/openai/whisper-large-v3';
+        const DIARIZATION_API_URL = 'https://api-inference.huggingface.co/models/pyannote/speaker-diarization';
+        const API_KEY = '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'; // החלף עם המפתח שלך
 
         const fileInput = document.getElementById('fileInput');
         const transcribeBtn = document.getElementById('transcribeBtn');
@@ -133,24 +173,40 @@
         const saveBtn = document.getElementById('saveBtn');
         const status = document.getElementById('status');
         const transcription = document.getElementById('transcription');
+        const progress = document.getElementById('progress');
+        const diarizationProgress = document.getElementById('diarization-progress');
+        const transcriptionProgress = document.getElementById('transcription-progress');
         let selectedFile = null;
-        let lastTranscription = '';
 
-        // פונקציה להעתקה ללוח
         async function copyToClipboard() {
             try {
-                await navigator.clipboard.writeText(transcription.textContent);
+                const plainText = Array.from(transcription.children)
+                    .map(segment => {
+                        const speaker = segment.querySelector('.speaker-label').textContent;
+                        const timestamp = segment.querySelector('.timestamp').textContent;
+                        const text = segment.querySelector('.text').textContent;
+                        return `[${timestamp}] ${speaker}: ${text}`;
+                    })
+                    .join('\n');
+                await navigator.clipboard.writeText(plainText);
                 const originalText = copyBtn.textContent;
                 copyBtn.textContent = 'הועתק!';
                 setTimeout(() => copyBtn.textContent = originalText, 2000);
             } catch (err) {
-                console.error('Failed to copy: ', err);
+                console.error('Failed to copy:', err);
             }
         }
 
-        // פונקציה לשמירה לקובץ
         function saveToFile() {
-            const blob = new Blob([transcription.textContent], { type: 'text/plain;charset=utf-8' });
+            const plainText = Array.from(transcription.children)
+                .map(segment => {
+                    const speaker = segment.querySelector('.speaker-label').textContent;
+                    const timestamp = segment.querySelector('.timestamp').textContent;
+                    const text = segment.querySelector('.text').textContent;
+                    return `[${timestamp}] ${speaker}: ${text}`;
+                })
+                .join('\n');
+            const blob = new Blob([plainText], { type: 'text/plain;charset=utf-8' });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
             a.download = 'transcription.txt';
@@ -160,52 +216,69 @@
             URL.revokeObjectURL(a.href);
         }
 
-        function generatePastelColor(seed) {
-            const hue = Math.abs(hashCode(seed)) % 360;
-            return `hsl(${hue}, 70%, 80%)`;
+        function formatTime(seconds) {
+            const pad = (num) => num.toString().padStart(2, '0');
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = Math.floor(seconds % 60);
+            const milliseconds = Math.floor((seconds % 1) * 1000);
+            return `${pad(minutes)}:${pad(remainingSeconds)}.${milliseconds.toString().padStart(3, '0')}`;
         }
 
-        function hashCode(str) {
-            let hash = 0;
-            for (let i = 0; i < str.length; i++) {
-                hash = str.charCodeAt(i) + ((hash << 5) - hash);
+        async function getDiarization(audioFile) {
+            const response = await fetch(DIARIZATION_API_URL, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${API_KEY}`
+                },
+                body: audioFile
+            });
+
+            if (!response.ok) {
+                throw new Error(`Diarization error: ${response.status}`);
             }
-            return hash;
+
+            return await response.json();
         }
 
-        // פונקציה לזיהוי דוברים בסיסי על פי סימני פיסוק וזמני שתיקה
-        function detectSpeakers(text) {
-            // מחלק את הטקסט לפי נקודות, סימני שאלה וסימני קריאה
-            const segments = text.split(/(?<=[.!?])\s+/);
-            let currentSpeaker = 1;
-            let lastSegmentType = '';
-            
-            return segments.map(segment => {
-                if (!segment.trim()) return null;
-                
-                // החלפת דובר על פי תוכן הטקסט
-                if (segment.includes('?')) {
-                    if (lastSegmentType === 'question') {
-                        currentSpeaker = currentSpeaker === 1 ? 2 : 1;
-                    }
-                    lastSegmentType = 'question';
-                } else if (segment.includes('!')) {
-                    if (lastSegmentType === 'exclamation') {
-                        currentSpeaker = currentSpeaker === 1 ? 2 : 1;
-                    }
-                    lastSegmentType = 'exclamation';
-                } else {
-                    if (lastSegmentType === 'statement') {
-                        currentSpeaker = currentSpeaker === 1 ? 2 : 1;
-                    }
-                    lastSegmentType = 'statement';
-                }
+        async function getTranscription(audioFile) {
+            const response = await fetch(WHISPER_API_URL, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${API_KEY}`
+                },
+                body: audioFile
+            });
 
-                return {
-                    speaker: currentSpeaker,
-                    text: segment.trim()
-                };
-            }).filter(Boolean);
+            if (!response.ok) {
+                throw new Error(`Transcription error: ${response.status}`);
+            }
+
+            return await response.json();
+        }
+
+        // פונקציה המשלבת את התמלול עם זיהוי הדוברים
+        function combineResults(transcriptionChunks, diarizationSegments) {
+            const segments = [];
+            
+            for (const chunk of transcriptionChunks) {
+                const startTime = chunk.timestamp[0];
+                const endTime = chunk.timestamp[1];
+                
+                // מציאת הדובר המתאים לפי חותמת הזמן
+                const speaker = diarizationSegments.find(seg => 
+                    (startTime >= seg.start && startTime < seg.end) ||
+                    (endTime > seg.start && endTime <= seg.end)
+                )?.speaker || 'UNKNOWN';
+
+                segments.push({
+                    start: startTime,
+                    end: endTime,
+                    text: chunk.text,
+                    speaker: speaker
+                });
+            }
+
+            return segments;
         }
 
         fileInput.addEventListener('change', (e) => {
@@ -244,50 +317,53 @@
             if (!selectedFile) return;
 
             try {
-                status.innerHTML = '<div class="loading"></div> מתחיל בתמלול...';
+                status.innerHTML = '<div class="loading"></div> מעבד את הקובץ...';
                 transcribeBtn.disabled = true;
                 copyBtn.style.display = 'none';
                 saveBtn.style.display = 'none';
                 transcription.textContent = '';
+                progress.style.display = 'block';
+                diarizationProgress.style.width = '0%';
+                transcriptionProgress.style.width = '0%';
 
-                const response = await fetch(API_URL, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${API_KEY}`
-                    },
-                    body: selectedFile
-                });
+                // הפעלת שני התהליכים במקביל
+                const [diarizationResult, transcriptionResult] = await Promise.all([
+                    getDiarization(selectedFile).then(result => {
+                        diarizationProgress.style.width = '100%';
+                        return result;
+                    }),
+                    getTranscription(selectedFile).then(result => {
+                        transcriptionProgress.style.width = '100%';
+                        return result;
+                    })
+                ]);
 
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
+                // שילוב התוצאות
+                const combinedSegments = combineResults(
+                    transcriptionResult.chunks,
+                    diarizationResult.segments
+                );
 
-                const result = await response.json();
-                
-                if (result && result.text) {
-                    lastTranscription = result.text;
-                    const segments = detectSpeakers(result.text);
-                    
-                    let formattedText = '';
-                    segments.forEach(segment => {
-                        const speakerColor = generatePastelColor(`speaker-${segment.speaker}`);
-                        formattedText += `<div class="segment">`;
-                        formattedText += `<span class="speaker" style="background-color: ${speakerColor}">דובר ${segment.speaker}</span>: `;
-                        formattedText += `${segment.text}</div>`;
-                    });
+                // יצירת HTML לתצוגה
+                const formattedTranscript = combinedSegments.map(segment => `
+                    <div class="segment ${segment.speaker}">
+                        <span class="speaker-label">${segment.speaker}</span>
+                        <span class="timestamp">[${formatTime(segment.start)} - ${formatTime(segment.end)}]</span>
+                        <span class="text">${segment.text.trim()}</span>
+                    </div>
+                `).join('');
 
-                    transcription.innerHTML = formattedText;
-                    status.textContent = 'התמלול הושלם בהצלחה!';
-                    copyBtn.style.display = 'inline-block';
-                    saveBtn.style.display = 'inline-block';
-                } else {
-                    throw new Error('תגובה לא תקינה מהשרת');
-                }
+                transcription.innerHTML = formattedTranscript;
+                status.textContent = 'התמלול הושלם בהצלחה!';
+                copyBtn.style.display = 'inline-block';
+                saveBtn.style.display = 'inline-block';
+
             } catch (error) {
                 console.error('Error:', error);
-                status.textContent = 'אירעה שגיאה בתמלול. אנא נסה שוב.';
+                status.textContent = `אירעה שגיאה: ${error.message}`;
             } finally {
                 transcribeBtn.disabled = false;
+                progress.style.display = 'none';
             }
         });
     </script>
